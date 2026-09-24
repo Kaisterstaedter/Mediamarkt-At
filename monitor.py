@@ -387,4 +387,5 @@ def process_telegram_commands(state):
                 )
             else:
                 lines.append(
-                    "🟢 WART
+                    "🟢 WARTESCHLANGE: NICHT ERKANNT"
+                )
