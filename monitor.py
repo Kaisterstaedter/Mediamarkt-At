@@ -3,7 +3,7 @@ import os
 import re
 
 import requests
-from bs4 import BeautifulSoup
+from playwright.sync_api import sync_playwright
 
 
 PRODUCTS = [
@@ -31,16 +31,6 @@ POKEMON_CENTER_STATE_FILE = "pokemoncenter_state.json"
 
 TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 TELEGRAM_CHAT_ID = str(os.environ["TELEGRAM_CHAT_ID"])
-
-
-HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (iPhone; CPU iPhone OS 18_6 like Mac OS X) "
-        "AppleWebKit/605.1.15 (KHTML, like Gecko) "
-        "Version/18.6 Mobile/15E148 Safari/604.1"
-    ),
-    "Accept-Language": "de-DE,de;q=0.9,en;q=0.8",
-}
 
 
 def load_state():
@@ -117,34 +107,54 @@ def normalize(text):
     return re.sub(r"\s+", " ", text).strip().lower()
 
 
-def check_product(product):
+def check_product(page, product):
     try:
-        response = requests.get(
+        print(f"Öffne: {product['url']}")
+
+        response = page.goto(
             product["url"],
-            headers=HEADERS,
-            timeout=30,
+            wait_until="domcontentloaded",
+            timeout=60000,
         )
 
-        response.raise_for_status()
+        if response:
+            print(
+                f"HTTP Status für {product['name']}: "
+                f"{response.status}"
+            )
 
-        soup = BeautifulSoup(
-            response.text,
-            "html.parser",
+        page.wait_for_timeout(5000)
+
+        current_url = page.url
+
+        print(
+            f"Aktuelle URL: {current_url}"
         )
 
-        page_text = normalize(
-            soup.get_text(" ", strip=True)
+        try:
+            body_text = page.locator(
+                "body"
+            ).inner_text(timeout=15000)
+        except Exception:
+            body_text = ""
+
+        try:
+            button_text = page.locator(
+                "button, a"
+            ).all_inner_texts()
+        except Exception:
+            button_text = []
+
+        combined = normalize(
+            body_text
+            + " "
+            + " ".join(button_text)
         )
 
-        buttons = []
-
-        for element in soup.find_all(["button", "a"]):
-            text = element.get_text(" ", strip=True)
-
-            if text:
-                buttons.append(normalize(text))
-
-        combined = page_text + " " + " ".join(buttons)
+        print(
+            f"Seiteninhalt für "
+            f"{product['name']} geladen."
+        )
 
         unavailable_terms = [
             "leider keine lieferung möglich",
@@ -175,13 +185,20 @@ def check_product(product):
         if unavailable:
             available = False
 
+        print(
+            f"Ergebnis: "
+            f"{'VERFÜGBAR' if available else 'NICHT VERFÜGBAR'}"
+        )
+
         return {
             "available": available,
             "error": False,
         }
 
     except Exception as e:
-        print(f"Fehler bei {product['name']}: {e}")
+        print(
+            f"FEHLER bei {product['name']}: {e}"
+        )
 
         return {
             "available": False,
@@ -189,8 +206,115 @@ def check_product(product):
         }
 
 
+def check_mediamarkt(state):
+
+    products_state = state.get(
+        "products",
+        {},
+    )
+
+    with sync_playwright() as p:
+
+        browser = p.chromium.launch(
+            headless=True
+        )
+
+        context = browser.new_context(
+            viewport={
+                "width": 390,
+                "height": 844,
+            },
+            user_agent=(
+                "Mozilla/5.0 (iPhone; CPU iPhone OS 18_6 like Mac OS X) "
+                "AppleWebKit/605.1.15 (KHTML, like Gecko) "
+                "Version/18.6 Mobile/15E148 Safari/604.1"
+            ),
+            locale="de-DE",
+            timezone_id="Europe/Berlin",
+        )
+
+        page = context.new_page()
+
+        try:
+
+            for product in PRODUCTS:
+
+                print(
+                    "----------------------------------------"
+                )
+
+                print(
+                    f"Prüfe: {product['name']}"
+                )
+
+                result = check_product(
+                    page,
+                    product,
+                )
+
+                current_available = result[
+                    "available"
+                ]
+
+                current_error = result[
+                    "error"
+                ]
+
+                previous = products_state.get(
+                    product["url"],
+                    {},
+                )
+
+                previous_available = previous.get(
+                    "available",
+                    False,
+                )
+
+                if (
+                    current_available
+                    and not previous_available
+                ):
+
+                    message = (
+                        "🚨 POKÉMON PRODUKT VERFÜGBAR!\n\n"
+                        f"{product['name']}\n\n"
+                        f"👉 {product['url']}"
+                    )
+
+                    try:
+                        telegram_send(
+                            message
+                        )
+
+                        print(
+                            "Telegram-Benachrichtigung "
+                            "gesendet."
+                        )
+
+                    except Exception as e:
+                        print(
+                            f"Telegram Fehler: {e}"
+                        )
+
+                products_state[
+                    product["url"]
+                ] = {
+                    "available": current_available,
+                    "error": current_error,
+                }
+
+        finally:
+            browser.close()
+
+    state["products"] = products_state
+
+
 def create_status_message(state):
-    products = state.get("products", {})
+
+    products = state.get(
+        "products",
+        {},
+    )
 
     lines = [
         "🔎 AKTUELLER STATUS",
@@ -199,16 +323,25 @@ def create_status_message(state):
     ]
 
     for product in PRODUCTS:
+
         old_status = products.get(
             product["url"],
             {},
         )
 
-        if old_status.get("available", False):
+        if old_status.get(
+            "available",
+            False,
+        ):
             status = "🟢 VERFÜGBAR"
 
-        elif old_status.get("error", False):
-            status = "⚠️ FEHLER BEIM LETZTEN CHECK"
+        elif old_status.get(
+            "error",
+            False,
+        ):
+            status = (
+                "⚠️ FEHLER BEIM LETZTEN CHECK"
+            )
 
         else:
             status = "🔴 NICHT VERFÜGBAR"
@@ -217,7 +350,9 @@ def create_status_message(state):
             f"{status} – {product['name']}"
         )
 
-    pokemon_state = load_pokemon_center_state()
+    pokemon_state = (
+        load_pokemon_center_state()
+    )
 
     pokemon_products = pokemon_state.get(
         "product_urls",
@@ -274,6 +409,7 @@ def create_status_message(state):
 
 
 def process_telegram_commands(state):
+
     url = (
         f"https://api.telegram.org/bot"
         f"{TELEGRAM_BOT_TOKEN}/getUpdates"
@@ -287,11 +423,12 @@ def process_telegram_commands(state):
     )
 
     print(
-        f"Telegram: Suche nach neuen Nachrichten "
-        f"ab offset {offset}"
+        f"Telegram: Suche nach Nachrichten "
+        f"ab Offset {offset}"
     )
 
     try:
+
         response = requests.get(
             url,
             params={
@@ -307,26 +444,36 @@ def process_telegram_commands(state):
         data = response.json()
 
     except Exception as e:
+
         print(
             f"Telegram getUpdates Fehler: {e}"
         )
+
         return
 
     if not data.get("ok"):
+
         print(
             f"Telegram API Fehler: {data}"
         )
+
         return
 
-    updates = data.get("result", [])
+    updates = data.get(
+        "result",
+        [],
+    )
 
     print(
-        f"Telegram: {len(updates)} neue Nachricht(en)"
+        f"Telegram: {len(updates)} "
+        f"Nachricht(en) gefunden."
     )
 
     for update in updates:
 
-        update_id = update.get("update_id")
+        update_id = update.get(
+            "update_id"
+        )
 
         if update_id is None:
             continue
@@ -335,26 +482,35 @@ def process_telegram_commands(state):
             update_id + 1
         )
 
-        message = update.get("message", {})
-
-        chat = message.get("chat", {})
-
-        chat_id = str(
-            chat.get("id", "")
+        message = update.get(
+            "message",
+            {},
         )
 
-        text = message.get("text", "")
+        chat = message.get(
+            "chat",
+            {},
+        )
+
+        chat_id = str(
+            chat.get(
+                "id",
+                "",
+            )
+        )
+
+        text = message.get(
+            "text",
+            "",
+        )
 
         print(
             f"Telegram Nachricht: "
-            f"chat_id={chat_id}, text={text!r}"
+            f"chat_id={chat_id}, "
+            f"text={text!r}"
         )
 
         if chat_id != TELEGRAM_CHAT_ID:
-            print(
-                "Telegram Nachricht ignoriert: "
-                "falsche Chat-ID."
-            )
             continue
 
         command = text.strip().lower()
@@ -362,12 +518,15 @@ def process_telegram_commands(state):
         if command == "/update":
 
             print(
-                "✅ /update erkannt – sende Status."
+                "✅ /update erkannt."
             )
 
             try:
+
                 telegram_send(
-                    create_status_message(state),
+                    create_status_message(
+                        state
+                    ),
                     chat_id,
                 )
 
@@ -376,70 +535,10 @@ def process_telegram_commands(state):
                 )
 
             except Exception as e:
-                print(
-                    f"Fehler beim Senden von /update: {e}"
-                )
-
-
-def check_mediamarkt(state):
-
-    products_state = state.get(
-        "products",
-        {},
-    )
-
-    for product in PRODUCTS:
-
-        print(
-            f"Prüfe: {product['name']}"
-        )
-
-        result = check_product(product)
-
-        current_available = result["available"]
-        current_error = result["error"]
-
-        previous = products_state.get(
-            product["url"],
-            {},
-        )
-
-        previous_available = previous.get(
-            "available",
-            False,
-        )
-
-        if (
-            current_available
-            and not previous_available
-        ):
-
-            message = (
-                "🚨 POKÉMON PRODUKT VERFÜGBAR!\n\n"
-                f"{product['name']}\n\n"
-                f"👉 {product['url']}"
-            )
-
-            try:
-                telegram_send(message)
 
                 print(
-                    "Telegram-Benachrichtigung gesendet."
+                    f"Fehler beim Senden: {e}"
                 )
-
-            except Exception as e:
-                print(
-                    f"Telegram Fehler: {e}"
-                )
-
-        products_state[
-            product["url"]
-        ] = {
-            "available": current_available,
-            "error": current_error,
-        }
-
-    state["products"] = products_state
 
 
 def check():
@@ -447,28 +546,43 @@ def check():
     state = load_state()
 
     print(
-        "=== MediaMarkt Pokémon Monitor ==="
+        "========================================"
     )
 
-    # 1. MediaMarkt prüfen
+    print(
+        "MediaMarkt Pokémon Monitor gestartet"
+    )
+
+    print(
+        "========================================"
+    )
+
+    # MediaMarkt prüfen
     check_mediamarkt(state)
 
-    # 2. State speichern
+    # State speichern
     save_state(state)
 
     print(
         "MediaMarkt Check erfolgreich."
     )
 
-    # 3. Telegram NACH dem Check prüfen
+    # Telegram prüfen
     process_telegram_commands(state)
 
-    # 4. State erneut speichern,
-    # damit der Telegram-Offset erhalten bleibt.
+    # Telegram-Offset speichern
     save_state(state)
 
     print(
-        "=== Monitor beendet ==="
+        "========================================"
+    )
+
+    print(
+        "Monitor beendet."
+    )
+
+    print(
+        "========================================"
     )
 
 
