@@ -1,1 +1,21 @@
-{}
+{
+  "products": {
+    "https://www.mediamarkt.at/de/product/_pokemon-company-international-top-trainer-box-30-jahre-sammelkarten-2087300.html": {
+      "available": false,
+      "error": true
+    },
+    "https://www.mediamarkt.at/de/product/_pokemon-company-international-30-jahre-ultra-premium-kollekt-tag-sammelkarten-2090549.html": {
+      "available": false,
+      "error": true
+    },
+    "https://www.mediamarkt.at/de/product/_pokemon-company-international-30-jahre-ultra-premium-kollekt-nacht-sammelkarten-2090548.html": {
+      "available": false,
+      "error": true
+    },
+    "https://www.mediamarkt.at/de/product/_pokemon-company-international-top-trainer-box-mega-entwicklung-delta-herrschaft-sammelkarten-2090551.html": {
+      "available": false,
+      "error": true
+    }
+  },
+  "telegram_update_offset": 265791026
+}
